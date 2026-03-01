@@ -1,79 +1,187 @@
+# ============================================
+# IMPORTS
+# ============================================
+
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage,AIMessage, BaseMessage, ToolMessage, SystemMessage
+from typing import TypedDict, Annotated, Sequence
+
+from langchain_groq import ChatGroq
+from langchain_core.messages import (
+    BaseMessage,
+    SystemMessage,
+    AIMessage,
+)
 from langchain_core.tools import tool
-from langgraph.graph.message import add_messages
-from typing import TypedDict, List, Union, Annotated, Sequence
+
 from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-load_dotenv() 
+
+
+# ============================================
+# LOAD ENVIRONMENT VARIABLES
+# ============================================
+
+load_dotenv()
+
+
+# ============================================
+# AGENT STATE
+# ============================================
 
 class AgentState(TypedDict):
-    messages: Annotated[Sequence[BaseMessage], add_messages()]
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+
+
+# ============================================
+# TOOLS
+# ============================================
 
 @tool
-def add(a:int, b:int):
-
-    ''''Adds two numbers and returns the result.
-    '''
+def add(a: int, b: int) -> int:
+    """Add two numbers."""
     return a + b
 
-@tool
-def subtract(a:int, b:int):
-
-    ''''Subtracts two numbers and returns the result.
-    '''
-    return a - b    
 
 @tool
-def multiply(a:int, b :int):
+def subtract(a: int, b: int) -> int:
+    """Subtract two numbers."""
+    return a - b
 
-    ''''Multiplies two numbers and returns the result.
-    '''
+
+@tool
+def multiply(a: int, b: int) -> int:
+    """Multiply two numbers."""
     return a * b
 
-tools =[add, subtract, multiply]
 
-model = ChatOpenAI(model="gpt-4o").bind_tools(tools)
+tools = [add, subtract, multiply]
 
-def model_call(state: AgentState) -> AgentState:
-    system__promt = SystemMessage(content="You are a helpful AI assistant.")
-    response = model.invoke([system__promt]+ state['messages'])
-    return {"messages":[response]}
+
+# ============================================
+# MODEL (GROQ)
+# ============================================
+
+llm = ChatGroq(
+    model="openai/gpt-oss-120b",
+    temperature=0.7,
+)
+
+# Enable tool calling
+llm = llm.bind_tools(tools)
+
+
+# ============================================
+# AGENT NODE (LLM THINKING STEP)
+# ============================================
+
+def agent_node(state: AgentState):
+
+    system_prompt = SystemMessage(
+        content="""
+You are a helpful AI math assistant.
+
+Rules:
+- Use tools for mathematical calculations.
+- Perform calculations before answering.
+- After finishing calculations, respond naturally.
+"""
+    )
+
+    response = llm.invoke(
+        [system_prompt] + list(state["messages"])
+    )
+
+    return {"messages": [response]}
+
+
+# ============================================
+# ROUTER LOGIC
+# ============================================
 
 def should_continue(state: AgentState):
-    messages = state['messages']
-    last_message = messages[-1]
-    if not last_message.tool_calls:
-        return "end"
 
-    else:
-        return "continue"
+    last_message = state["messages"][-1]
 
+    # If model wants tool execution
+    if isinstance(last_message, AIMessage) and last_message.tool_calls:
+        return "tools"
+
+    # Otherwise stop
+    return END
+
+
+# ============================================
+# BUILD GRAPH
+# ============================================
 
 graph = StateGraph(AgentState)
-graph.add_node("our__agent", model_call)
 
-tool_node = ToolNode(tools=tools)
-graph.add_node("tools", tool_node)
-graph.set_entry_point("our__agent")
-graph.add_conditional_edges("our__agent", should_continue, {
-    "continue": "tools",
-    "end": END
-})
+# Nodes
+graph.add_node("agent", agent_node)
+graph.add_node("tools", ToolNode(tools))
+
+# Flow
+graph.add_edge(START, "agent")
+
+graph.add_conditional_edges(
+    "agent",
+    should_continue,
+    {
+        "tools": "tools",
+        END: END,
+    },
+)
+
+# Loop back after tool execution
+graph.add_edge("tools", "agent")
+
+# Compile application
+app = graph.compile()
 
 
-graph.add_edge("tools", "our__agent")
-app =graph.compile()
+# ============================================
+# STREAM OUTPUT HELPER
+# ============================================
 
 def print_stream(stream):
-    for s in stream:
-        message = s['messages'][-1]
-        if isinstance(message, tuple):
-            print(message)
-        else:
+
+    for step in stream:
+        message = step["messages"][-1]
+
+        if hasattr(message, "pretty_print"):
             message.pretty_print()
 
 
-input ={"messages":[("user", "Add 3+4. subract 10-2, multiply 5*6   and tell me a joke afterwards.")]}
-print_stream(app.stream(input, stream_mode="values"))
+# ============================================
+# RUN AGENT
+# ============================================
+
+def run_agent():
+
+    print("\n🤖 Groq Math Agent Started")
+    print("Type 'exit' to quit\n")
+
+    while True:
+
+        user_input = input("You: ")
+
+        if user_input.lower() == "exit":
+            break
+
+        stream = app.stream(
+            {"messages": [("user", user_input)]},
+            stream_mode="values",
+        )
+
+        print_stream(stream)
+
+    print("\n✅ Agent stopped.")
+
+
+# ============================================
+# MAIN
+# ============================================
+
+if __name__ == "__main__":
+    run_agent()

@@ -1,127 +1,163 @@
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage,AIMessage, BaseMessage, ToolMessage, SystemMessage
+from langchain_groq import ChatGroq
+from langchain_core.messages import (
+    HumanMessage,
+    AIMessage,
+    ToolMessage,
+    SystemMessage,
+    BaseMessage,
+)
 from langchain_core.tools import tool
-from langgraph.graph.message import add_messages
-from typing import TypedDict, List, Union, Annotated, Sequence
 from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-load_dotenv() 
+from typing import TypedDict, Annotated, Sequence
 
-# thi is a global variable to store the document content
-document_content = ""  
+load_dotenv()
 
+# ===============================
+# GLOBAL DOCUMENT
+# ===============================
+document_content = ""
+
+# ===============================
+# STATE
+# ===============================
 class AgentState(TypedDict):
-    messages: Annotated[Sequence[BaseMessage], add_messages()]
+    messages: Annotated[Sequence[BaseMessage], add_messages]
 
 
+# ===============================
+# TOOLS
+# ===============================
 @tool
-def update(content:str)-> str:
-    '''Updates the global document content with the provided content.
-    '''
+def update(content: str) -> str:
+    """Update document content."""
     global document_content
     document_content = content
-    return f"Document content updated successfully!The current content is:\n {document_content}"
+    return f"✅ Document updated:\n{document_content}"
 
 
 @tool
-def save(filename:str)-> str:
-    '''Saves the current document content to a file with the given filename.
-    Args:: Name for the file to save the document content.
-    Returns: Confirmation message indicating the file has been saved.
-    ''' 
+def save(filename: str) -> str:
+    """Save document into file."""
     global document_content
+
     if not filename.endswith(".txt"):
         filename += ".txt"
-    
-    try:
-        with open(filename, "w") as file:
-            file.write(document_content)
-            print(f"Document content saved to {filename}")
-        return f"Document content saved to {filename} successfully!"
-    except Exception as e:
-        return f"Failed to save document content: {str(e)}"
-    
-tools =[update, save]
 
-model = ChatOpenAI(model="gpt-4o").bind_tools(tools)
+    with open(filename, "w") as f:
+        f.write(document_content)
 
-def our_agent(state: AgentState) -> AgentState:
-    system__promt = SystemMessage(content=f"""
-    You are a drafter AI assistant. The user will provide you with content to update a document.
-    - if the user provides new content, use the 'update' tool to update the document content.
-    - if the user wants to save the document, use the 'save' tool with the desired filename.
-    - make sure to always show the current content of the document after an update.
-    the current content of the document is:
-    {document_content}
-    """)
-   
-    if not state['messages']:
-        user_input = "Hello! I am your drafter assistant. How can I help you with your document today?"
-        user_message = HumanMessage(content=user_input)
-    
-    else:
-        user_input =input("\\nn what do you want to do? (update/save/exit): ")
-        print(f"User input: {user_input}")
-        user_message = HumanMessage(content=user_input)
-    
-
-    all__messages = [system__promt] + state['messages'] + [user_message]
-    response = model.invoke(all__messages)
-    print("AI response:", response.content)
-
-    if hasattr(response, 'tool_calls') and response.tool_calls:
-        # If the response includes tool calls, append the tool message
-        print (f"Using tool: {[tc['tool_name'] for tc in response.tool_calls]}")
-        return {"messages": list(state['messages']) + [user_message, response]}
-    
-
-    def should_continue(state: AgentState)-> str:
-        """ determines whether to continue or end based on tool calls in the last message. """
-        messages = state['messages']
-        if not messages:
-            return "continue"
-        for message in reversed(messages):
-            if isinstance(message, ToolMessage):
-                if(isinstance(message, ToolMessage) and 
-                    "saved" in message.content.lower()
-                    and "document content" in message.content.lower()):
-                    return "end" #  goes to end edge if document is saved
-        return "continue"
+    return f"✅ Document content saved to {filename}"
 
 
-    def print_messages(messages):
-        """ function i made to print the mesaages in a readable format."""
+tools = [update, save]
 
-        if not messages:
-            print("No messages to display.")
-            return
-        for message in messages[-3:]:
-            if isinstance(message, ToolMessage):
-                print(f"ToolMessage: {message.content}")
-            elif isinstance(message, HumanMessage):
-                print(f"You: {message.content}")
-            elif isinstance(message, AIMessage):
-                print(f"AI: {message.content}")
-            else:
-                print(f"Message: {message.content}")    
-            
+# ===============================
+# GROQ MODEL
+# ===============================
+model = ChatGroq(
+    model="openai/gpt-oss-120b",
+    temperature=0.7,
+)
 
-    graph = StateGraph(AgentState)
-    graph.add_node("our_agent", our_agent)
-    graph.add_node("tools", ToolNode(tools))
-    graph.set_entry_point("our_agent")
-    graph.add_edge("our_agent", "tools")
+# 🔥 REQUIRED
+model = model.bind_tools(tools)
 
-    graph.add_conditional_edges("tools", should_continue, {"continue": "our_agent", "end": END})
+# ===============================
+# AGENT NODE
+# ===============================
+def agent_node(state: AgentState):
 
-    app = graph.compile()
-    
-    def run_document_agent():
-        print("Welcome to the Drafter AI Assistant!")
-        state={"messages": []}
+    system_prompt = SystemMessage(
+        content=f"""
+You are a Drafter AI assistant.
 
-        for step in app.stream(state, stream_mode="values"):
-            if 'messages' in step:
-                print_messages(step['messages'])
-        print("Exiting Drafter AI Assistant. Goodbye!")
+Rules:
+- Use 'update' tool when user edits document.
+- Use 'save' tool when user wants to save.
+- Always show current document after update.
+
+Current document:
+{document_content}
+"""
+    )
+
+    response = model.invoke(
+        [system_prompt] + list(state["messages"])
+    )
+
+    return {"messages": [response]}
+
+
+# ===============================
+# ROUTER
+# ===============================
+def should_continue(state: AgentState):
+
+    last_message = state["messages"][-1]
+
+    if isinstance(last_message, AIMessage) and last_message.tool_calls:
+        return "tools"
+
+    if isinstance(last_message, ToolMessage):
+        if "saved" in last_message.content.lower():
+            return END
+
+    return END
+
+
+# ===============================
+# GRAPH
+# ===============================
+graph = StateGraph(AgentState)
+
+graph.add_node("agent", agent_node)
+graph.add_node("tools", ToolNode(tools))
+
+graph.add_edge(START, "agent")
+
+graph.add_conditional_edges(
+    "agent",
+    should_continue,
+    {
+        "tools": "tools",
+        END: END,
+    },
+)
+
+graph.add_edge("tools", "agent")
+
+app = graph.compile()
+
+# ===============================
+# RUN LOOP
+# ===============================
+def run_document_agent():
+
+    print("\n📄 Drafter AI Assistant Started")
+    state = {"messages": []}
+
+    while True:
+        user_input = input("\nYou: ")
+
+        if user_input.lower() == "exit":
+            break
+
+        state = app.invoke(
+            {
+                "messages": [HumanMessage(content=user_input)]
+            }
+        )
+
+        for msg in state["messages"][-3:]:
+            if isinstance(msg, AIMessage):
+                print("AI:", msg.content)
+            elif isinstance(msg, ToolMessage):
+                print("Tool:", msg.content)
+
+    print("\n✅ Goodbye!")
+
+
+run_document_agent()
