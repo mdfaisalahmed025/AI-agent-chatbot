@@ -3,7 +3,7 @@ load_dotenv()
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.memory import InMemorySaver
 from typing import TypedDict, Annotated
 from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_groq import ChatGroq
@@ -20,6 +20,13 @@ llm = ChatGroq(
     temperature=0.7,
 )
 
+# ---------------- THREAD ----------------
+thread_id = "user_001"
+
+config = {"configurable": {"thread_id": thread_id}}
+
+print(f"\n✅ Thread Started: {thread_id}\n")
+
 
 # ---------------- NODE ----------------
 def chat_node(state: ChatState) -> ChatState:
@@ -29,7 +36,7 @@ def chat_node(state: ChatState) -> ChatState:
 
 
 # ---------------- GRAPH ----------------
-checkpointer = MemorySaver()
+checkpointer = InMemorySaver()
 
 graph = StateGraph(ChatState)
 graph.add_node("chat_node", chat_node)

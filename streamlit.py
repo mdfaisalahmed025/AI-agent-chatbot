@@ -21,10 +21,11 @@ if user_input:
     with st.chat_message("user"):
         st.text(user_input)
     
-    result = chatbot.invoke(
-        {"messages": [HumanMessage(content=user_input)]},config=config
-    )
-    ai_message = result['messages'][-1].content
-    st.session_state['message_history'].append({'role':'assistant', 'content':f"Nice to meet you, {ai_message}!"})
     with st.chat_message("assistant"):
-        st.text(f"Nice to meet you, {ai_message}!")
+        ai_message =   st.write_stream( message_chunk.content for message_chunk, metadata in chatbot.stream(
+            {"messages":[HumanMessage(content=user_input)]},
+            config=config,
+            stream_mode="messages"
+        ))
+    st.session_state['message_history'].append({'role':'assistant', 'content':ai_message})
+      
