@@ -26,6 +26,7 @@ thread_id = "user_001"
 config = {"configurable": {"thread_id": thread_id}}
 
 
+
 # ---------------- NODE ----------------
 def chat_node(state: ChatState) -> ChatState:
     messages = state["messages"]

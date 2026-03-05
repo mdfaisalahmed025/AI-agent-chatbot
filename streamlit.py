@@ -1,197 +1,107 @@
 import streamlit as st
-from chatbot_backend import chatbot
-from langchain_core.messages import HumanMessage
 import uuid
 
-# ------------------------------
-# PAGE CONFIG (ChatGPT style)
-# ------------------------------
+from database_backend import (chatbot,
+    save_message, load_conversation, retrieve_all_threads, get_thread_title
+)
+
+# ---------------- PAGE CONFIG ----------------
 st.set_page_config(
     page_title="AI Assistant",
     page_icon="🤖",
     layout="centered"
 )
 
-# ------------------------------
-# CUSTOM CSS (Premium UI)
-# ------------------------------
+# ---------------- CSS ----------------
 st.markdown("""
 <style>
-
-.block-container {
-    padding-top: 1rem;
-}
-
-.chat-title {
-    font-size: 28px;
-    font-weight: bold;
-}
-
-.sidebar-title {
-    font-size: 20px;
-    font-weight: bold;
-}
-
+.block-container { padding-top: 1rem; }
+.chat-title { font-size: 28px; font-weight: bold; }
+.sidebar-title { font-size: 20px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
-# ------------------------------
-# UTILITY FUNCTIONS
-# ------------------------------
-
+# ---------------- UTILS ----------------
 def generate_thread_id():
     return str(uuid.uuid4())
 
-
 def add_thread(thread_id, title="New Chat"):
-
     if thread_id not in st.session_state.chat_threads:
-
         st.session_state.chat_threads.append(thread_id)
-
         st.session_state.thread_titles[thread_id] = title
 
-
 def reset_chat():
-
     thread_id = generate_thread_id()
-
     st.session_state.thread_id = thread_id
-
+    st.session_state.message_history = []
     add_thread(thread_id)
 
-    st.session_state.message_history = []
-
-
-def load_conversation(thread_id):
-
-    state = chatbot.get_state(
-        config={"configurable": {"thread_id": thread_id}}
-    )
-
-    if state is None:
-        return []
-
-    if "messages" not in state.values:
-        return []
-
-    return state.values["messages"]
-
-
-# ------------------------------
-# SESSION STATE INIT
-# ------------------------------
-
+# ---------------- SESSION STATE ----------------
 if "thread_id" not in st.session_state:
     st.session_state.thread_id = generate_thread_id()
-
 if "message_history" not in st.session_state:
     st.session_state.message_history = []
-
 if "chat_threads" not in st.session_state:
-    st.session_state.chat_threads = []
-
+    st.session_state.chat_threads = list(retrieve_all_threads())
 if "thread_titles" not in st.session_state:
     st.session_state.thread_titles = {}
 
+# Load titles for existing threads
+for thread in st.session_state.chat_threads:
+    if thread not in st.session_state.thread_titles:
+        st.session_state.thread_titles[thread] = get_thread_title(thread)
+
 add_thread(st.session_state.thread_id)
 
-# ------------------------------
-# SIDEBAR
-# ------------------------------
-
+# ---------------- SIDEBAR ----------------
 st.sidebar.markdown("## 🤖 AI Assistant")
-
 if st.sidebar.button("➕ New Chat"):
-
     reset_chat()
 
 st.sidebar.markdown("### 💬 Conversations")
-
-for i, thread_id in enumerate(st.session_state.chat_threads[::-1]):
-
-    title = st.session_state.thread_titles.get(thread_id, "New Chat")
-
+for i, thread in enumerate(st.session_state.chat_threads[::-1]):
+    title = st.session_state.thread_titles.get(thread, "New Chat")
     if st.sidebar.button(title, key=f"thread_{i}"):
+        st.session_state.thread_id = thread
+        st.session_state.message_history = load_conversation(thread)
 
-        st.session_state.thread_id = thread_id
-
-        messages = load_conversation(thread_id)
-
-        temp = []
-
-        for msg in messages:
-
-            role = "user" if isinstance(msg, HumanMessage) else "assistant"
-
-            temp.append({
-                "role": role,
-                "content": msg.content
-            })
-
-        st.session_state.message_history = temp
-
-
-# ------------------------------
-# MAIN CHAT UI
-# ------------------------------
-
+# ---------------- MAIN CHAT UI ----------------
 st.markdown("<div class='chat-title'>💬 AI Chat</div>", unsafe_allow_html=True)
 
-config = {"configurable": {"thread_id": st.session_state.thread_id}}
-
-# show previous messages
+# Show previous messages
 for message in st.session_state.message_history:
-
     with st.chat_message(message["role"]):
-
         st.markdown(message["content"])
 
-
-# ------------------------------
-# USER INPUT
-# ------------------------------
-
+# ---------------- USER INPUT ----------------
 user_input = st.chat_input("Ask anything...")
 
 if user_input:
-
-    # Save title from first message
+    # Save first message as thread title
     if len(st.session_state.message_history) == 0:
-
         st.session_state.thread_titles[st.session_state.thread_id] = user_input[:40]
 
-    # show user message
+    # Show user message
     with st.chat_message("user"):
-
         st.markdown(user_input)
+    st.session_state.message_history.append({"role": "user", "content": user_input})
 
-    st.session_state.message_history.append({
-        "role": "user",
-        "content": user_input
-    })
+    # ---------------- STREAMING AI RESPONSE ----------------
+    from langchain_core.messages import HumanMessage
 
+    config = {"configurable": {"thread_id": st.session_state.thread_id}}
+    stream = chatbot.stream(
+        {"messages": [HumanMessage(content=user_input)]},
+        config=config,
+        stream_mode="messages"  # important for token streaming
+    )
 
-    # AI response
-    with st.chat_message("assistant"):
+    ai_text = ""
+    placeholder = st.empty()  # placeholder to update response token by token
 
-        stream = chatbot.stream(
-            {"messages": [HumanMessage(content=user_input)]},
-            config=config,
-            stream_mode="messages"
-        )
+    for chunk, metadata in stream:
+        ai_text += chunk.content
+        placeholder.markdown(ai_text)  # update with new token
 
-        ai_text = ""
-
-        placeholder = st.empty()
-
-        for chunk, metadata in stream:
-
-            ai_text += chunk.content
-
-            placeholder.markdown(ai_text)
-
-    st.session_state.message_history.append({
-        "role": "assistant",
-        "content": ai_text
-    })
+    # Save AI response to session state
+    st.session_state.message_history.append({"role": "assistant", "content": ai_text})
