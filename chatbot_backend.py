@@ -25,8 +25,6 @@ thread_id = "user_001"
 
 config = {"configurable": {"thread_id": thread_id}}
 
-print(f"\n✅ Thread Started: {thread_id}\n")
-
 
 # ---------------- NODE ----------------
 def chat_node(state: ChatState) -> ChatState:
