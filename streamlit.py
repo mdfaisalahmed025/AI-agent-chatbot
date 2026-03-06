@@ -9,7 +9,7 @@ from database_backend import (chatbot,
 st.set_page_config(
     page_title="AI Assistant",
     page_icon="🤖",
-    layout="centered"
+    layout="wide"
 )
 
 # ---------------- CSS ----------------
